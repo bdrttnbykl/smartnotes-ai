@@ -17,6 +17,16 @@ type Note = {
   quiz?: QuizQuestion[] | null;
 };
 
+type DocumentAnalysis = {
+  fileName: string;
+  pageCount: number;
+  wordCount: number;
+  summary: string;
+  keyPoints: string[];
+  importantSections: string[];
+  actionItems: string[];
+};
+
 type AiResult =
   | { id: string; summary: string }
   | { id: string; tags: string[] }
@@ -34,6 +44,11 @@ function App() {
   const [selectedTag, setSelectedTag] = useState("");
   const [loading, setLoading] = useState(false);
   const [busyNoteId, setBusyNoteId] = useState<string | null>(null);
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [documentAnalysis, setDocumentAnalysis] = useState<DocumentAnalysis | null>(null);
+  const [documentLoading, setDocumentLoading] = useState(false);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, Record<number, string>>>({});
+  const [quizSubmitted, setQuizSubmitted] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
 
   const allTags = useMemo(
@@ -157,11 +172,67 @@ function App() {
       setNotes((current) =>
         current.map((note) => (note.id === noteId ? { ...note, ...data } : note))
       );
+
+      if (action === "quiz") {
+        setQuizAnswers((current) => ({ ...current, [noteId]: {} }));
+        setQuizSubmitted((current) => ({ ...current, [noteId]: false }));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Beklenmeyen hata");
     } finally {
       setBusyNoteId(null);
     }
+  };
+
+  const analyzeDocument = async (e: FormEvent) => {
+    e.preventDefault();
+
+    if (!documentFile) {
+      setError("Analiz için PDF seçmelisin");
+      return;
+    }
+
+    setDocumentLoading(true);
+    setDocumentAnalysis(null);
+    setError("");
+
+    try {
+      const formData = new FormData();
+      formData.append("document", documentFile);
+
+      const res = await fetch(`${API_URL}/documents/analyze`, {
+        method: "POST",
+        body: formData,
+      });
+      const data: DocumentAnalysis & { error?: string | { message?: string } } =
+        await res.json();
+
+      if (!res.ok) {
+        const errorMessage =
+          typeof data.error === "object" ? data.error.message : data.error;
+        throw new Error(errorMessage || "Doküman analiz edilemedi");
+      }
+
+      setDocumentAnalysis(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Beklenmeyen hata");
+    } finally {
+      setDocumentLoading(false);
+    }
+  };
+
+  const updateQuizAnswer = (noteId: string, questionIndex: number, value: string) => {
+    setQuizAnswers((current) => ({
+      ...current,
+      [noteId]: {
+        ...(current[noteId] || {}),
+        [questionIndex]: value,
+      },
+    }));
+  };
+
+  const submitQuiz = (noteId: string) => {
+    setQuizSubmitted((current) => ({ ...current, [noteId]: true }));
   };
 
   const resetForm = () => {
@@ -230,6 +301,49 @@ function App() {
         </form>
 
         <section className="notes-panel">
+          <section className="document-panel">
+            <div>
+              <h2>PDF / Doküman Analizi</h2>
+              <p className="muted">
+                PDF yükle; AI özet, önemli noktalar ve yapılacakları çıkarsın.
+              </p>
+            </div>
+
+            <form className="document-form" onSubmit={analyzeDocument}>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => setDocumentFile(e.target.files?.[0] || null)}
+              />
+              <button type="submit" disabled={documentLoading}>
+                {documentLoading ? "Analiz ediliyor..." : "PDF Analiz Et"}
+              </button>
+            </form>
+
+            {documentAnalysis && (
+              <div className="document-result">
+                <div className="document-meta">
+                  <strong>{documentAnalysis.fileName}</strong>
+                  <span>
+                    {documentAnalysis.pageCount} sayfa · {documentAnalysis.wordCount} kelime
+                  </span>
+                </div>
+
+                <section>
+                  <h3>Özet</h3>
+                  <p>{documentAnalysis.summary}</p>
+                </section>
+
+                <AnalysisList title="Önemli noktalar" items={documentAnalysis.keyPoints} />
+                <AnalysisList
+                  title="Kritik bölümler"
+                  items={documentAnalysis.importantSections}
+                />
+                <AnalysisList title="Aksiyonlar" items={documentAnalysis.actionItems} />
+              </div>
+            )}
+          </section>
+
           <div className="filters">
             <input
               placeholder="Notlarda ara"
@@ -329,23 +443,14 @@ function App() {
                 )}
 
                 {!!note.quiz?.length && (
-                  <section className="quiz">
-                    <h3>Quiz</h3>
-                    {note.quiz.map((item, index) => (
-                      <div className="quiz-item" key={`${note.id}-${index}`}>
-                        <strong>
-                          {index + 1}. {item.question}
-                        </strong>
-                        <ul>
-                          {item.options.map((option) => (
-                            <li key={option}>{option}</li>
-                          ))}
-                        </ul>
-                        <p>Cevap: {item.answer}</p>
-                        {item.explanation && <p>{item.explanation}</p>}
-                      </div>
-                    ))}
-                  </section>
+                  <QuizSection
+                    noteId={note.id}
+                    quiz={note.quiz}
+                    answers={quizAnswers[note.id] || {}}
+                    submitted={!!quizSubmitted[note.id]}
+                    onAnswerChange={updateQuizAnswer}
+                    onSubmit={submitQuiz}
+                  />
                 )}
               </article>
             ))}
@@ -354,6 +459,105 @@ function App() {
       </section>
     </main>
   );
+}
+
+function QuizSection({
+  noteId,
+  quiz,
+  answers,
+  submitted,
+  onAnswerChange,
+  onSubmit,
+}: {
+  noteId: string;
+  quiz: QuizQuestion[];
+  answers: Record<number, string>;
+  submitted: boolean;
+  onAnswerChange: (noteId: string, questionIndex: number, value: string) => void;
+  onSubmit: (noteId: string) => void;
+}) {
+  const score = submitted
+    ? quiz.filter((item, index) => isCorrectAnswer(answers[index], item.answer)).length
+    : 0;
+
+  return (
+    <section className="quiz">
+      <div className="quiz-header">
+        <h3>Quiz</h3>
+        {submitted && (
+          <strong>
+            Sonuç: {score}/{quiz.length}
+          </strong>
+        )}
+      </div>
+
+      {quiz.map((item, index) => {
+        const userAnswer = answers[index] || "";
+        const isCorrect = isCorrectAnswer(userAnswer, item.answer);
+
+        return (
+          <div className="quiz-item" key={`${noteId}-${index}`}>
+            <strong>
+              {index + 1}. {item.question}
+            </strong>
+            <ul>
+              {item.options.map((option) => (
+                <li key={option}>{option}</li>
+              ))}
+            </ul>
+            <label className="quiz-answer-field">
+              Cevabın
+              <input
+                placeholder="A, B, C, D veya cevabını yaz"
+                value={userAnswer}
+                disabled={submitted}
+                onChange={(e) => onAnswerChange(noteId, index, e.target.value)}
+              />
+            </label>
+
+            {submitted && (
+              <div className={isCorrect ? "quiz-result correct" : "quiz-result wrong"}>
+                <strong>{isCorrect ? "Doğru" : "Yanlış"}</strong>
+                <p>Doğru cevap: {item.answer}</p>
+                {item.explanation && <p>{item.explanation}</p>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {!submitted && (
+        <button type="button" onClick={() => onSubmit(noteId)}>
+          Sonuçlandır
+        </button>
+      )}
+    </section>
+  );
+}
+
+function AnalysisList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <section>
+      <h3>{title}</h3>
+      <ul className="analysis-list">
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function isCorrectAnswer(userAnswer: string | undefined, correctAnswer: string) {
+  return normalizeQuizAnswer(userAnswer || "") === normalizeQuizAnswer(correctAnswer);
+}
+
+function normalizeQuizAnswer(value: string) {
+  return value.trim().toLocaleLowerCase("tr-TR");
 }
 
 function parseTags(value: string) {

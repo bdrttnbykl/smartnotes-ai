@@ -1,10 +1,18 @@
 import express from "express";
 import cors from "cors";
+import multer from "multer";
+import { PDFParse } from "pdf-parse";
 import "./config/env";
 import { getOpenAIClient, OPENAI_MODEL } from "./config/openai";
 import { supabase } from "./config/supabase";
 
 const app = express();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
+});
 
 app.use(cors());
 app.use(express.json());
@@ -175,6 +183,40 @@ app.post("/notes/:id/quiz", async (req, res) => {
   }
 });
 
+app.post("/documents/analyze", upload.single("document"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "PDF dosyasi zorunlu" });
+    }
+
+    if (req.file.mimetype !== "application/pdf") {
+      return res.status(400).json({ error: "Sadece PDF dosyasi yukleyebilirsin" });
+    }
+
+    const parsed = await extractPdfText(req.file.buffer);
+    const text = normalizeDocumentText(parsed.text);
+
+    if (!text) {
+      return res.status(400).json({ error: "PDF icinden okunabilir metin bulunamadi" });
+    }
+
+    const output = await generateText(
+      getDocumentAnalysisInstructions(countWords(text), parsed.total),
+      text.slice(0, 45000)
+    );
+    const analysis = parseDocumentAnalysis(output);
+
+    res.json({
+      fileName: req.file.originalname,
+      pageCount: parsed.total,
+      wordCount: countWords(text),
+      ...analysis,
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
@@ -185,6 +227,13 @@ type NoteRecord = {
   id: string;
   title: string;
   content: string | null;
+};
+
+type DocumentAnalysis = {
+  summary: string;
+  keyPoints: string[];
+  importantSections: string[];
+  actionItems: string[];
 };
 
 function normalizeTags(tags: unknown): string[] {
@@ -302,6 +351,50 @@ function getSummaryLengthRule(wordCount: number): string {
   return "Ozet 12-15 paragraf olsun; bolumlu, kapsamli bir calisma notu gibi yaz ve ana detaylari kaybetme.";
 }
 
+function normalizeDocumentText(value: string): string {
+  return value
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function extractPdfText(buffer: Buffer) {
+  const parser = new PDFParse({ data: buffer });
+
+  try {
+    return await parser.getText();
+  } finally {
+    await parser.destroy();
+  }
+}
+
+function getDocumentAnalysisInstructions(wordCount: number, pageCount: number): string {
+  return [
+    "Sen Turkce dokuman analizi yapan bir asistansin.",
+    `PDF yaklasik ${pageCount} sayfa ve ${wordCount} kelime.`,
+    "Ders notu, rapor veya is dokumani gibi dusunerek kullanicinin hizli calismasini sagla.",
+    "Sadece gecerli JSON dondur. Markdown kullanma.",
+    "JSON formati tam olarak su olsun:",
+    '{"summary":"...","keyPoints":["..."],"importantSections":["..."],"actionItems":["..."]}',
+    "summary alaninda 1-3 paragraf net ozet yaz.",
+    "keyPoints alaninda en onemli 5-8 maddeyi yaz.",
+    "importantSections alaninda dokumandaki kritik bolumleri, kavramlari veya karar noktalarini yaz.",
+    "actionItems alaninda tekrar, sinav, toplanti veya is takibi icin uygulanabilir maddeleri yaz.",
+  ].join(" ");
+}
+
+function parseDocumentAnalysis(value: string): DocumentAnalysis {
+  const parsed = parseJsonObject(value);
+
+  return {
+    summary: getStringValue(parsed.summary),
+    keyPoints: normalizeStringList(parsed.keyPoints),
+    importantSections: normalizeStringList(parsed.importantSections),
+    actionItems: normalizeStringList(parsed.actionItems),
+  };
+}
+
 async function generateText(instructions: string, input: string): Promise<string> {
   const openai = getOpenAIClient();
   const response = await openai.responses.create({
@@ -320,19 +413,50 @@ function parseStringArray(value: string): string[] {
 }
 
 function parseJsonArray(value: string): unknown[] {
-  const cleaned = value
-    .trim()
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/```$/i, "")
-    .trim();
-  const parsed = JSON.parse(cleaned);
+  const parsed = JSON.parse(cleanJson(value));
 
   if (!Array.isArray(parsed)) {
     throw new Error("AI response is not a JSON array.");
   }
 
   return parsed;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  const parsed = JSON.parse(cleanJson(value));
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("AI response is not a JSON object.");
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+function cleanJson(value: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+
+  return cleaned;
+}
+
+function getStringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 10);
 }
 
 function handleError(res: express.Response, error: unknown) {
