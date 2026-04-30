@@ -241,9 +241,35 @@ p {
   padding-left: 12px;
 }
 
-.quiz-item ul {
-  margin: 8px 0;
-  padding-left: 22px;
+.quiz-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.quiz-option {
+  background: #f6f6f3;
+  border: 1px solid #d8d8d2;
+  color: #1d1d1f;
+  text-align: left;
+}
+
+.quiz-option.selected {
+  background: #edf4f2;
+  border-color: #205c54;
+  color: #205c54;
+}
+
+.quiz-option.correct {
+  background: #eef8f1;
+  border-color: #45a466;
+  color: #146c2e;
+}
+
+.quiz-option.wrong {
+  background: #fff2ef;
+  border-color: #e36b4f;
+  color: #9a3412;
 }
 
 .quiz-answer-field {
@@ -270,6 +296,46 @@ p {
 .quiz-result.wrong {
   background: #fff2ef;
   color: #9a3412;
+}
+
+.ai-chat {
+  border-top: 1px solid #ededeb;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+.chat-messages {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chat-message {
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.chat-message.user {
+  background: #edf4f2;
+}
+
+.chat-message.assistant {
+  background: #f6f6f3;
+}
+
+.chat-message p {
+  margin-bottom: 0;
+  white-space: pre-wrap;
+}
+
+.chat-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-form input {
+  flex: 1 1 260px;
 }
 
 @media (max-width: 820px) {

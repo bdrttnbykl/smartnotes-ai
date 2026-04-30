@@ -171,13 +171,46 @@ app.post("/notes/:id/quiz", async (req, res) => {
         "Verilen nottan 5 soruluk Turkce quiz olustur.",
         "Sadece JSON array dondur.",
         "Her eleman su formatta olsun:",
-        '{"question":"...","options":["A","B","C","D"],"answer":"A","explanation":"..."}',
+        '{"question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"answer":"A","explanation":"..."}',
+        "options alanindaki her sik anlamli bir cevap metni icersin; sadece A, B, C, D yazma.",
+        "answer alaninda dogru sikkin sadece harfini yaz.",
       ].join(" "),
       noteText(note)
     );
     const quiz = parseJsonArray(output);
 
     res.json({ id: note.id, quiz });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/chat", async (req, res) => {
+  try {
+    const { message, contextTitle, context } = req.body;
+
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "message zorunlu" });
+    }
+
+    if (!context || typeof context !== "string") {
+      return res.status(400).json({ error: "context zorunlu" });
+    }
+
+    const answer = await generateText(
+      getChatInstructions(String(contextTitle || "SmartNotes icerigi")),
+      [
+        `Konu: ${String(contextTitle || "SmartNotes icerigi")}`,
+        "",
+        "Baglam:",
+        context.slice(0, 45000),
+        "",
+        "Kullanici sorusu:",
+        message,
+      ].join("\n")
+    );
+
+    res.json({ answer });
   } catch (error) {
     handleError(res, error);
   }
@@ -393,6 +426,16 @@ function parseDocumentAnalysis(value: string): DocumentAnalysis {
     importantSections: normalizeStringList(parsed.importantSections),
     actionItems: normalizeStringList(parsed.actionItems),
   };
+}
+
+function getChatInstructions(contextTitle: string): string {
+  return [
+    "Sen SmartNotes icinde calisan Turkce bir calisma ve dokuman asistanisin.",
+    `Kullanici '${contextTitle}' baglami hakkinda soru soruyor.`,
+    "Cevabini yalnizca verilen baglama dayanarak ver.",
+    "Baglamda cevap yoksa bunu acikca soyle ve tahmin uretme.",
+    "Gerekirse kisa maddeler kullan; net, pratik ve ogrenci/is kullanicisina uygun cevap ver.",
+  ].join(" ");
 }
 
 async function generateText(instructions: string, input: string): Promise<string> {

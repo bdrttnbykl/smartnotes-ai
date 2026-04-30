@@ -27,6 +27,11 @@ type DocumentAnalysis = {
   actionItems: string[];
 };
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  text: string;
+};
+
 type AiResult =
   | { id: string; summary: string }
   | { id: string; tags: string[] }
@@ -49,6 +54,9 @@ function App() {
   const [documentLoading, setDocumentLoading] = useState(false);
   const [quizAnswers, setQuizAnswers] = useState<Record<string, Record<number, string>>>({});
   const [quizSubmitted, setQuizSubmitted] = useState<Record<string, boolean>>({});
+  const [chatInputs, setChatInputs] = useState<Record<string, string>>({});
+  const [chatMessages, setChatMessages] = useState<Record<string, ChatMessage[]>>({});
+  const [busyChatKey, setBusyChatKey] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   const allTags = useMemo(
@@ -235,6 +243,56 @@ function App() {
     setQuizSubmitted((current) => ({ ...current, [noteId]: true }));
   };
 
+  const updateChatInput = (chatKey: string, value: string) => {
+    setChatInputs((current) => ({ ...current, [chatKey]: value }));
+  };
+
+  const sendChatMessage = async (chatKey: string, contextTitle: string, context: string) => {
+    const message = (chatInputs[chatKey] || "").trim();
+
+    if (!message) {
+      return;
+    }
+
+    setBusyChatKey(chatKey);
+    setError("");
+    setChatInputs((current) => ({ ...current, [chatKey]: "" }));
+    setChatMessages((current) => ({
+      ...current,
+      [chatKey]: [...(current[chatKey] || []), { role: "user", text: message }],
+    }));
+
+    try {
+      const res = await fetch(`${API_URL}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message, contextTitle, context }),
+      });
+      const data: { answer?: string; error?: string | { message?: string } } =
+        await res.json();
+
+      if (!res.ok) {
+        const errorMessage =
+          typeof data.error === "object" ? data.error.message : data.error;
+        throw new Error(errorMessage || "Sohbet cevabi alinamadi");
+      }
+
+      setChatMessages((current) => ({
+        ...current,
+        [chatKey]: [
+          ...(current[chatKey] || []),
+          { role: "assistant", text: data.answer || "" },
+        ],
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Beklenmeyen hata");
+    } finally {
+      setBusyChatKey(null);
+    }
+  };
+
   const resetForm = () => {
     setTitle("");
     setContent("");
@@ -340,6 +398,21 @@ function App() {
                   items={documentAnalysis.importantSections}
                 />
                 <AnalysisList title="Aksiyonlar" items={documentAnalysis.actionItems} />
+                <AiChat
+                  chatKey="document-analysis"
+                  title="PDF hakkinda sor"
+                  input={chatInputs["document-analysis"] || ""}
+                  messages={chatMessages["document-analysis"] || []}
+                  loading={busyChatKey === "document-analysis"}
+                  onInputChange={updateChatInput}
+                  onSend={() =>
+                    sendChatMessage(
+                      "document-analysis",
+                      documentAnalysis.fileName,
+                      documentAnalysisToText(documentAnalysis)
+                    )
+                  }
+                />
               </div>
             )}
           </section>
@@ -452,6 +525,22 @@ function App() {
                     onSubmit={submitQuiz}
                   />
                 )}
+
+                <AiChat
+                  chatKey={`note-${note.id}`}
+                  title="Bu not hakkinda sor"
+                  input={chatInputs[`note-${note.id}`] || ""}
+                  messages={chatMessages[`note-${note.id}`] || []}
+                  loading={busyChatKey === `note-${note.id}`}
+                  onInputChange={updateChatInput}
+                  onSend={() =>
+                    sendChatMessage(
+                      `note-${note.id}`,
+                      note.title,
+                      noteToChatContext(note)
+                    )
+                  }
+                />
               </article>
             ))}
           </div>
@@ -500,12 +589,20 @@ function QuizSection({
             <strong>
               {index + 1}. {item.question}
             </strong>
-            <ul>
+            <div className="quiz-options">
               {item.options.map((option) => (
-                <li key={option}>{option}</li>
+                <button
+                  type="button"
+                  className={getQuizOptionClass(option, userAnswer, item.answer, submitted)}
+                  key={option}
+                  disabled={submitted}
+                  onClick={() => onAnswerChange(noteId, index, option)}
+                >
+                  {option}
+                </button>
               ))}
-            </ul>
-            <label className="quiz-answer-field">
+            </div>
+            <label className="quiz-answer-field" hidden>
               Cevabın
               <input
                 placeholder="A, B, C, D veya cevabını yaz"
@@ -535,6 +632,58 @@ function QuizSection({
   );
 }
 
+function AiChat({
+  chatKey,
+  title,
+  input,
+  messages,
+  loading,
+  onInputChange,
+  onSend,
+}: {
+  chatKey: string;
+  title: string;
+  input: string;
+  messages: ChatMessage[];
+  loading: boolean;
+  onInputChange: (chatKey: string, value: string) => void;
+  onSend: () => void;
+}) {
+  return (
+    <section className="ai-chat">
+      <h3>{title}</h3>
+
+      {messages.length > 0 && (
+        <div className="chat-messages">
+          {messages.map((message, index) => (
+            <div className={`chat-message ${message.role}`} key={`${chatKey}-${index}`}>
+              <strong>{message.role === "user" ? "Sen" : "AI"}</strong>
+              <p>{message.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <form
+        className="chat-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSend();
+        }}
+      >
+        <input
+          placeholder="Bu icerik hakkinda soru sor"
+          value={input}
+          onChange={(e) => onInputChange(chatKey, e.target.value)}
+        />
+        <button type="submit" disabled={loading || !input.trim()}>
+          {loading ? "Yanitlaniyor..." : "Sor"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 function AnalysisList({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) {
     return null;
@@ -553,11 +702,63 @@ function AnalysisList({ title, items }: { title: string; items: string[] }) {
 }
 
 function isCorrectAnswer(userAnswer: string | undefined, correctAnswer: string) {
-  return normalizeQuizAnswer(userAnswer || "") === normalizeQuizAnswer(correctAnswer);
+  return getAnswerLetter(userAnswer || "") === getAnswerLetter(correctAnswer);
 }
 
-function normalizeQuizAnswer(value: string) {
-  return value.trim().toLocaleLowerCase("tr-TR");
+function getQuizOptionClass(
+  option: string,
+  userAnswer: string,
+  correctAnswer: string,
+  submitted: boolean
+) {
+  const classes = ["quiz-option"];
+
+  if (option === userAnswer) {
+    classes.push("selected");
+  }
+
+  if (submitted && isCorrectAnswer(option, correctAnswer)) {
+    classes.push("correct");
+  }
+
+  if (submitted && option === userAnswer && !isCorrectAnswer(option, correctAnswer)) {
+    classes.push("wrong");
+  }
+
+  return classes.join(" ");
+}
+
+function getAnswerLetter(value: string) {
+  return value.trim().match(/^[A-D]/i)?.[0].toUpperCase() || value.trim().toUpperCase();
+}
+
+function noteToChatContext(note: Note) {
+  return [
+    `Baslik: ${note.title}`,
+    "",
+    "Icerik:",
+    note.content || "",
+    "",
+    note.summary ? `Ozet:\n${note.summary}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function documentAnalysisToText(analysis: DocumentAnalysis) {
+  return [
+    `Dosya: ${analysis.fileName}`,
+    `Sayfa: ${analysis.pageCount}`,
+    `Kelime: ${analysis.wordCount}`,
+    "",
+    `Ozet:\n${analysis.summary}`,
+    "",
+    `Onemli noktalar:\n${analysis.keyPoints.join("\n")}`,
+    "",
+    `Kritik bolumler:\n${analysis.importantSections.join("\n")}`,
+    "",
+    `Aksiyonlar:\n${analysis.actionItems.join("\n")}`,
+  ].join("\n");
 }
 
 function parseTags(value: string) {
